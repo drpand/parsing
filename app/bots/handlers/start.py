@@ -1,7 +1,8 @@
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, BufferedInputFile
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from app.bots.keyboards.main import get_main_keyboard
 from app.utils.logger import logger
 from app.core.version import get_full_version, get_version_info
@@ -12,6 +13,7 @@ from app.db.models import Product
 from app.bots.handlers.admin_settings import get_setting_value
 from datetime import timedelta
 import json
+import requests
 
 router = Router()
 
@@ -192,7 +194,7 @@ async def main_menu(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("client_product_view:"))
 async def client_view_product(callback: CallbackQuery):
-    """🛍 Просмотр товара клиентом"""
+    """🛍 Просмотр товара клиентом (iOS compatible)"""
     from sqlalchemy import select
     from app.db.models import Product
     import json
@@ -211,26 +213,14 @@ async def client_view_product(callback: CallbackQuery):
     # Расчёт цены в RUB
     price_rub = int(product.price_inr * 0.9)
     
-    text = f"🛍 <b>{product.title[:100]}</b>\n\n"
-    text += f"💰 <b>Цена: {price_rub:,} ₽</b>\n\n"
+    # 🔐 УПРОЩЁННЫЙ ТЕКСТ ДЛЯ iOS (без сложного HTML)
+    status = "✅ В наличии" if product.in_stock else "❌ Нет в наличии"
     
-    if product.in_stock:
-        text += "✅ В наличии\n\n"
-    else:
-        text += "❌ Нет в наличии\n\n"
-    
-    # Фото
-    if product.images:
-        images = json.loads(product.images) if isinstance(product.images, str) else product.images
-        if images and images[0].startswith('http'):
-            text += f"🖼 <a href='{images[0]}'>Фото товара</a>\n\n"
-    
-    # Оригинал
-    if product.source_url:
-        text += f"🔗 <a href='{product.source_url}'>Оригинал</a>\n\n"
-    
-    text += f"🆔 <b>ID:</b> <code>{product.id}</code>\n\n"
-    text += "💡 <i>Для заказа напишите менеджеру</i>"
+    text = f"{product.title[:80]}\n\n"
+    text += f"💰 Цена: {price_rub:,} ₽\n"
+    text += f"{status}\n\n"
+    text += f"🆔 ID: {product.id}\n\n"
+    text += "💡 Для заказа напишите менеджеру"
     
     # 🔐 КНОПКИ ССЫЛОК (фото и оригинал)
     keyboard = InlineKeyboardBuilder()
@@ -239,7 +229,7 @@ async def client_view_product(callback: CallbackQuery):
     if product.images:
         images = json.loads(product.images) if isinstance(product.images, str) else product.images
         if images and images[0].startswith('http'):
-            link_buttons.append(InlineKeyboardButton(text="🖼 Фото товара", url=images[0]))
+            link_buttons.append(InlineKeyboardButton(text="🖼 Фото", url=images[0]))
     
     if product.source_url:
         link_buttons.append(InlineKeyboardButton(text="🔗 Оригинал", url=product.source_url))
@@ -247,7 +237,7 @@ async def client_view_product(callback: CallbackQuery):
     if link_buttons:
         keyboard.row(*link_buttons)
     
-    # 🔐 СТРЕЛКИ НАВИГАЦИИ (как у менеджера/админа)
+    # 🔐 СТРЕЛКИ НАВИГАЦИИ
     nav_buttons = []
     
     # Предыдущий товар
@@ -256,16 +246,11 @@ async def client_view_product(callback: CallbackQuery):
             select(Product).where(Product.id < product_id).order_by(Product.id.desc()).limit(1)
         )
         prev_product = result.scalar()
-        
         if prev_product:
-            nav_buttons.append(
-                InlineKeyboardButton(text="◀️", callback_data=f"client_product_view:{prev_product.id}")
-            )
+            nav_buttons.append(InlineKeyboardButton(text="◀️", callback_data=f"client_product_view:{prev_product.id}"))
     
     # К списку
-    nav_buttons.append(
-        InlineKeyboardButton(text="🔙 К списку", callback_data="client_catalog_back")
-    )
+    nav_buttons.append(InlineKeyboardButton(text="🔙 Список", callback_data="client_catalog_back"))
     
     # Следующий товар
     async with database.get_session() as session:
@@ -273,26 +258,40 @@ async def client_view_product(callback: CallbackQuery):
             select(Product).where(Product.id > product_id).order_by(Product.id).limit(1)
         )
         next_product = result.scalar()
-        
         if next_product:
-            nav_buttons.append(
-                InlineKeyboardButton(text="▶️", callback_data=f"client_product_view:{next_product.id}")
-            )
+            nav_buttons.append(InlineKeyboardButton(text="▶️", callback_data=f"client_product_view:{next_product.id}"))
     
     keyboard.row(*nav_buttons)
     
-    # Кнопки действий
+    # Кнопка менеджера
     keyboard.row(
-        InlineKeyboardButton(text="📞 Связаться с менеджером", callback_data="client_contact_manager")
+        InlineKeyboardButton(text="📞 Менеджер", callback_data="client_contact_manager")
     )
     
     try:
-        await callback.message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+        # 🔐 ОТПРАВКА С ФОТО (если есть)
+        if product.images:
+            images = json.loads(product.images) if isinstance(product.images, str) else product.images
+            if images and images[0].startswith('http'):
+                headers = {'User-Agent': 'Mozilla/5.0 Chrome/120.0.0.0'}
+                response = requests.get(images[0], headers=headers, timeout=10)
+                if response.status_code == 200:
+                    photo = BufferedInputFile(response.content, filename=f"product_{product.id}.jpg")
+                    await callback.message.answer_photo(
+                        photo=photo,
+                        caption=text,
+                        reply_markup=keyboard.as_markup()
+                    )
+                    await callback.answer()
+                    return
+        # Если фото нет — отправляем текст
+        await callback.message.answer(text, reply_markup=keyboard.as_markup())
+        await callback.answer()
     except Exception as e:
-        logger.error(f"Error sending product to client: {e}")
-        await callback.message.answer(text, parse_mode="HTML")
-    
-    await callback.answer()
+        logger.error(f"Error sending to client: {e}")
+        # 🔐 FALLBACK — только текст
+        await callback.message.answer(text, reply_markup=keyboard.as_markup())
+        await callback.answer()
 
 
 @router.callback_query(F.data == "client_catalog_back")
