@@ -290,7 +290,11 @@ async def product_view(callback: CallbackQuery, state: FSMContext):
                 if product.images:
                     images = json.loads(product.images) if isinstance(product.images, str) else product.images
                     if images and images[0].startswith('http'):
-                        response = requests.get(images[0], timeout=10)
+                        # 🔐 ДОБАВЛЯЕМ USER-AGENT ДЛЯ ZARA
+                        headers = {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                        }
+                        response = requests.get(images[0], headers=headers, timeout=10)
                         if response.status_code == 200:
                             photo = BufferedInputFile(response.content, filename=f"product_{product.id}.jpg")
                             await callback.message.answer_photo(
@@ -301,10 +305,12 @@ async def product_view(callback: CallbackQuery, state: FSMContext):
                             )
                             await callback.answer()
                             return
+                        else:
+                            logger.warning(f"Failed to download image: Status {response.status_code}")
             except Exception as e:
                 logger.warning(f"Failed to send photo: {e}")
 
-            # Если фото не удалось — отправляем текст
+            # Если фото не удалось — отправляем текст с кнопкой Фото
             await callback.message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
             await callback.answer()
 

@@ -232,21 +232,59 @@ async def client_view_product(callback: CallbackQuery):
     text += f"🆔 <b>ID:</b> <code>{product.id}</code>\n\n"
     text += "💡 <i>Для заказа напишите менеджеру</i>"
     
-    # Кнопки
+    # 🔐 КНОПКИ ССЫЛОК (фото и оригинал)
     keyboard = InlineKeyboardBuilder()
     
+    link_buttons = []
     if product.images:
         images = json.loads(product.images) if isinstance(product.images, str) else product.images
         if images and images[0].startswith('http'):
-            keyboard.button(text="🖼 Фото", url=images[0])
+            link_buttons.append(InlineKeyboardButton(text="🖼 Фото товара", url=images[0]))
     
     if product.source_url:
-        keyboard.button(text="🔗 Оригинал", url=product.source_url)
+        link_buttons.append(InlineKeyboardButton(text="🔗 Оригинал", url=product.source_url))
     
-    keyboard.row()
-    keyboard.button(text="📞 Связаться с менеджером", callback_data="client_contact_manager")
-    keyboard.row()
-    keyboard.button(text="🔙 В каталог", callback_data="client_catalog_back")
+    if link_buttons:
+        keyboard.row(*link_buttons)
+    
+    # 🔐 СТРЕЛКИ НАВИГАЦИИ (как у менеджера/админа)
+    nav_buttons = []
+    
+    # Предыдущий товар
+    async with database.get_session() as session:
+        result = await session.execute(
+            select(Product).where(Product.id < product_id).order_by(Product.id.desc()).limit(1)
+        )
+        prev_product = result.scalar()
+        
+        if prev_product:
+            nav_buttons.append(
+                InlineKeyboardButton(text="◀️", callback_data=f"client_product_view:{prev_product.id}")
+            )
+    
+    # К списку
+    nav_buttons.append(
+        InlineKeyboardButton(text="🔙 К списку", callback_data="client_catalog_back")
+    )
+    
+    # Следующий товар
+    async with database.get_session() as session:
+        result = await session.execute(
+            select(Product).where(Product.id > product_id).order_by(Product.id).limit(1)
+        )
+        next_product = result.scalar()
+        
+        if next_product:
+            nav_buttons.append(
+                InlineKeyboardButton(text="▶️", callback_data=f"client_product_view:{next_product.id}")
+            )
+    
+    keyboard.row(*nav_buttons)
+    
+    # Кнопки действий
+    keyboard.row(
+        InlineKeyboardButton(text="📞 Связаться с менеджером", callback_data="client_contact_manager")
+    )
     
     try:
         await callback.message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
