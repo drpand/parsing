@@ -222,22 +222,8 @@ async def client_view_product(callback: CallbackQuery):
     text += f"🆔 ID: {product.id}\n\n"
     text += "💡 Для заказа напишите менеджеру"
     
-    # 🔐 КНОПКИ ССЫЛОК (фото и оригинал)
-    keyboard = InlineKeyboardBuilder()
-    
-    link_buttons = []
-    if product.images:
-        images = json.loads(product.images) if isinstance(product.images, str) else product.images
-        if images and images[0].startswith('http'):
-            link_buttons.append(InlineKeyboardButton(text="🖼 Фото", url=images[0]))
-    
-    if product.source_url:
-        link_buttons.append(InlineKeyboardButton(text="🔗 Оригинал", url=product.source_url))
-    
-    if link_buttons:
-        keyboard.row(*link_buttons)
-    
     # 🔐 СТРЕЛКИ НАВИГАЦИИ
+    keyboard = InlineKeyboardBuilder()
     nav_buttons = []
     
     # Предыдущий товар
@@ -268,8 +254,8 @@ async def client_view_product(callback: CallbackQuery):
         InlineKeyboardButton(text="📞 Менеджер", callback_data="client_contact_manager")
     )
     
+    # 🔐 ОТПРАВЛЯЕМ С ФОТО (iOS compatible)
     try:
-        # 🔐 ОТПРАВКА С ФОТО (если есть)
         if product.images:
             images = json.loads(product.images) if isinstance(product.images, str) else product.images
             if images and images[0].startswith('http'):
@@ -284,14 +270,12 @@ async def client_view_product(callback: CallbackQuery):
                     )
                     await callback.answer()
                     return
-        # Если фото нет — отправляем текст
-        await callback.message.answer(text, reply_markup=keyboard.as_markup())
-        await callback.answer()
     except Exception as e:
-        logger.error(f"Error sending to client: {e}")
-        # 🔐 FALLBACK — только текст
-        await callback.message.answer(text, reply_markup=keyboard.as_markup())
-        await callback.answer()
+        logger.warning(f"Failed to send photo: {e}")
+    
+    # Fallback — текст с кнопками
+    await callback.message.answer(text, reply_markup=keyboard.as_markup())
+    await callback.answer()
 
 
 @router.callback_query(F.data == "client_catalog_back")
