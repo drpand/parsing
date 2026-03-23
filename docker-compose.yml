@@ -1,23 +1,28 @@
-version: '3.8'
+# Docker Compose для IndiaShop Bot v1.2.0
+# © 2026 IndiaShop. All Rights Reserved.
 
 services:
   bot:
-    build: .
-    container_name: indiashop_bot
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: indiashop_bot_v1.2
     restart: unless-stopped
-    
+
     # Переменные окружения из .env
     env_file:
       - .env
-    
-    # Том для логов
+
+    # Том для данных (БД, кэш, логи)
     volumes:
-      - ./logs:/app/logs
+      - ./data:/app/data
       - ./bot.db:/app/bot.db
-    
-    # Shared memory для Chrome (важно!)
+      - ./bot_cache.db:/app/bot_cache.db
+      - ./logs:/app/logs
+
+    # Shared memory для Chrome (важно для Selenium!)
     shm_size: 2gb
-    
+
     # Ограничение ресурсов
     deploy:
       resources:
@@ -27,15 +32,28 @@ services:
         reservations:
           cpus: '0.5'
           memory: 256M
-    
+
+    # Сеть
+    networks:
+      - indiashop_network
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
     # Логи
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
-        max-file: "3"
+        max-file: "5"
 
 # Сети
 networks:
-  default:
-    name: indiashop_network
+  indiashop_network:
+    driver: bridge
+    name: indiashop_network_v1.2

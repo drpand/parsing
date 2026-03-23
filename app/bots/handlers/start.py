@@ -190,14 +190,265 @@ async def main_menu(callback: CallbackQuery):
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("client_product_view:"))
+async def client_view_product(callback: CallbackQuery):
+    """🛍 Просмотр товара клиентом"""
+    from sqlalchemy import select
+    from app.db.models import Product
+    import json
+    
+    product_id = int(callback.data.split(":")[1])
+    logger.info(f"Client {callback.from_user.id} viewing product: {product_id}")
+    
+    async with database.get_session() as session:
+        result = await session.execute(select(Product).where(Product.id == product_id))
+        product = result.scalar()
+    
+    if not product:
+        await callback.answer("❌ Товар не найден", show_alert=True)
+        return
+    
+    # Расчёт цены в RUB
+    price_rub = int(product.price_inr * 0.9)
+    
+    text = f"🛍 <b>{product.title[:100]}</b>\n\n"
+    text += f"💰 <b>Цена: {price_rub:,} ₽</b>\n\n"
+    
+    if product.in_stock:
+        text += "✅ В наличии\n\n"
+    else:
+        text += "❌ Нет в наличии\n\n"
+    
+    # Фото
+    if product.images:
+        images = json.loads(product.images) if isinstance(product.images, str) else product.images
+        if images and images[0].startswith('http'):
+            text += f"🖼 <a href='{images[0]}'>Фото товара</a>\n\n"
+    
+    # Оригинал
+    if product.source_url:
+        text += f"🔗 <a href='{product.source_url}'>Оригинал</a>\n\n"
+    
+    text += f"🆔 <b>ID:</b> <code>{product.id}</code>\n\n"
+    text += "💡 <i>Для заказа напишите менеджеру</i>"
+    
+    # Кнопки
+    keyboard = InlineKeyboardBuilder()
+    
+    if product.images:
+        images = json.loads(product.images) if isinstance(product.images, str) else product.images
+        if images and images[0].startswith('http'):
+            keyboard.button(text="🖼 Фото", url=images[0])
+    
+    if product.source_url:
+        keyboard.button(text="🔗 Оригинал", url=product.source_url)
+    
+    keyboard.row()
+    keyboard.button(text="📞 Связаться с менеджером", callback_data="client_contact_manager")
+    keyboard.row()
+    keyboard.button(text="🔙 В каталог", callback_data="client_catalog_back")
+    
+    try:
+        await callback.message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Error sending product to client: {e}")
+        await callback.message.answer(text, parse_mode="HTML")
+    
+    await callback.answer()
+
+
+@router.callback_query(F.data == "client_catalog_back")
+async def client_catalog_back(callback: CallbackQuery):
+    """🔙 Возврат в каталог"""
+    from sqlalchemy import select
+    from app.db.models import Product
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    
+    await callback.message.delete()
+    
+    async with database.get_session() as session:
+        result = await session.execute(
+            select(Product).where(Product.is_active == True).limit(20)
+        )
+        products = result.scalars().all()
+    
+    text = "🛍 <b>Каталог товаров</b>\n\n"
+    text += f"Найдено товаров: {len(products)}\n\n"
+    
+    keyboard = InlineKeyboardBuilder()
+    
+    for product in products[:10]:
+        price_rub = int(product.price_inr * 0.9)
+        btn_text = f"💰 {product.title[:35]}... | {price_rub:,}₽"
+        keyboard.button(
+            text=btn_text,
+            callback_data=f"client_product_view:{product.id}"
+        )
+    
+    keyboard.adjust(1)
+    keyboard.row()
+    keyboard.button(text="🔙 В главное меню", callback_data="main_menu")
+    
+    await callback.message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "client_contact_manager")
+async def client_contact_manager(callback: CallbackQuery):
+    """📞 Связь с менеджером"""
+    from sqlalchemy import select
+    from app.db.models import Manager
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    
+    async with database.get_session() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.is_active == True)
+        )
+        managers = result.scalars().all()
+    
+    if not managers:
+        await callback.answer("Нет активных менеджеров", show_alert=True)
+        return
+    
+    text = "📞 <b>Наши менеджеры</b>\n\n"
+    keyboard = InlineKeyboardBuilder()
+    
+    for manager in managers:
+        username = manager.username.strip('@') if manager.username else None
+        if username:
+            keyboard.button(
+                text=f"✉️ @{username}",
+                url=f"https://t.me/{username}"
+            )
+    
+    keyboard.adjust(2)
+    keyboard.row()
+    keyboard.button(text="🔙 Назад", callback_data="client_catalog_back")
+    
+    await callback.message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await callback.answer()
+
+
+@router.message(F.text == "🛍 Каталог товаров")
+async def show_catalog(message: Message):
+    """🛍 Каталог товаров для клиента"""
+    from sqlalchemy import select
+    from app.db.models import Product
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    
+    logger.info(f"User {message.from_user.id} opened catalog")
+    
+    # Получаем товары из БД (только опубликованные и активные)
+    async with database.get_session() as session:
+        result = await session.execute(
+            select(Product).where(Product.is_active == True).limit(20)
+        )
+        products = result.scalars().all()
+    
+    if not products:
+        await message.answer(
+            "🛍 <b>Каталог товаров</b>\n\n"
+            "В каталоге пока нет товаров.\n"
+            "Загляните позже!",
+            parse_mode="HTML"
+        )
+        return
+    
+    # Показываем первые 10 товаров
+    text = f"🛍 <b>Каталог товаров</b>\n\n"
+    text += f"Найдено товаров: {len(products)}\n\n"
+    
+    keyboard = InlineKeyboardBuilder()
+    
+    for product in products[:10]:
+        price_rub = int(product.price_inr * 0.9)  # Примерный расчёт
+        btn_text = f"💰 {product.title[:35]}... | {price_rub:,}₽"
+        keyboard.button(
+            text=btn_text,
+            callback_data=f"client_product_view:{product.id}"
+        )
+    
+    keyboard.adjust(1)
+    
+    await message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+
+
+@router.message(F.text == "📞 Связаться с менеджером")
+async def contact_manager(message: Message):
+    """📞 Связь с активными менеджерами"""
+    from sqlalchemy import select
+    from app.db.models import Manager
+    
+    logger.info(f"User {message.from_user.id} wants to contact manager")
+    
+    # Получаем активных менеджеров из БД
+    async with database.get_session() as session:
+        result = await session.execute(
+            select(Manager).where(Manager.is_active == True)
+        )
+        managers = result.scalars().all()
+    
+    if not managers:
+        await message.answer(
+            "📞 <b>Связаться с менеджером</b>\n\n"
+            "В данный момент нет активных менеджеров.\n"
+            "Попробуйте позже или напишите в поддержку.",
+            parse_mode="HTML"
+        )
+        return
+    
+    # Формируем список менеджеров
+    text = "📞 <b>Наши менеджеры</b>\n\n"
+    text += "Выберите менеджера для связи:\n\n"
+    
+    keyboard = InlineKeyboardBuilder()
+    
+    for manager in managers:
+        username = manager.username.strip('@') if manager.username else None
+        if username:
+            text += f"👤 <b>{manager.first_name or 'Менеджер'}</b>\n"
+            text += f"   @{username}\n\n"
+            keyboard.button(
+                text=f"✉️ Написать @{username}",
+                url=f"https://t.me/{username}"
+            )
+    
+    keyboard.adjust(1)
+    
+    await message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+
+
+@router.message(F.text == "ℹ️ О боте")
+async def about_bot(message: Message):
+    """ℹ️ Информация о боте"""
+    version = get_full_version()
+    info = get_version_info()
+    
+    await message.answer(
+        f"ℹ️ <b>О боте IndiaShop</b>\n\n"
+        f"📦 <b>Версия:</b> {version}\n"
+        f"📅 <b>Дата сборки:</b> {info['build_date']}\n"
+        f"📊 <b>Статус:</b> {info['status']}\n\n"
+        f"🛍 <b>Возможности:</b>\n"
+        f"• Просмотр каталога товаров\n"
+        f"• Связь с менеджерами\n"
+        f"• Оформление заказов (в разработке)\n\n"
+        f"📞 <b>Поддержка:</b>\n"
+        f"Нажмите '📞 Связаться с менеджером' для помощи.\n\n"
+        f"{info['copyright']}",
+        parse_mode="HTML",
+    )
+    logger.info(f"User {message.from_user.id} viewed 'About bot'")
+
+
 @router.message(F.text == "👋 Привет")
 async def say_hello(message: Message):
-    """Приветствие"""
+    """Приветствие (устарело, оставлено для совместимости)"""
     version = get_full_version()
     await message.answer(
         f"👋 <b>Привет!</b>\n\n"
         f"Я бот IndiaShop <b>{version}</b>.\n"
-        f"Сейчас я нахожусь в разработке, но скоро смогу помочь вам с покупками!",
+        f"Выберите раздел в меню:",
         parse_mode="HTML",
     )
     logger.info(f"User {message.from_user.id} said hello")
@@ -205,18 +456,15 @@ async def say_hello(message: Message):
 
 @router.message(F.text == "📞 Помощь")
 async def show_help(message: Message):
-    """Помощь"""
+    """Помощь (устарело, оставлено для совместимости)"""
     version = get_full_version()
     await message.answer(
         f"📞 <b>Помощь</b>\n\n"
         f"Я бот IndiaShop <b>{version}</b>.\n\n"
-        "🛠 <b>Текущий статус:</b>\n"
-        "Бот находится в активной разработке.\n"
-        "Пользовательский функционал будет доступен в следующей версии.\n\n"
-        "📋 <b>Команды:</b>\n"
-        "/start - Главное меню\n"
-        "/admin - Админ-панель (для администраторов)\n"
-        f"/version - Версия бота ({version})",
+        f"📋 <b>Команды:</b>\n"
+        f"/start - Главное меню\n"
+        f"/version - Версия бота\n\n"
+        f"Нажмите '📞 Связаться с менеджером' для помощи.",
         parse_mode="HTML",
     )
     logger.info(f"User {message.from_user.id} requested help")

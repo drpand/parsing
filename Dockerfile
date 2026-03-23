@@ -1,7 +1,9 @@
-# Dockerfile для IndiaShop Bot v0.6.0
+# Dockerfile для IndiaShop Bot v1.2.0
+# © 2026 IndiaShop. All Rights Reserved.
+
 FROM python:3.11-slim
 
-# Устанавливаем Chrome и ChromeDriver
+# Устанавливаем Chrome и ChromeDriver для Selenium
 RUN apt-get update && apt-get install -y \
     chromium \
     chromium-driver \
@@ -25,7 +27,7 @@ RUN apt-get update && apt-get install -y \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Переменные окружения для Chrome
+# Переменные окружения для Chrome (Selenium)
 ENV CHROME_BIN=/usr/bin/chromium
 ENV CHROMEDRIVER=/usr/bin/chromedriver
 ENV DISPLAY=:99
@@ -40,13 +42,22 @@ COPY requirements.txt .
 # Устанавливаем зависимости
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем код
+# Копируем код приложения
 COPY . .
 
+# Создаём директорию для данных
+RUN mkdir -p /app/data && chown -R botuser:botuser /app/data
+
 # Создаём пользователя для безопасности
-RUN useradd -m botuser
-RUN chown -R botuser:botuser /app
+RUN useradd -m botuser && chown -R botuser:botuser /app
 USER botuser
+
+# Экспозиция портов (если понадобится веб-интерфейс)
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import sys; sys.exit(0)"
 
 # Запуск бота
 CMD ["python", "main.py"]

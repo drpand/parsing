@@ -5,10 +5,10 @@ IndiaShop Reseller Bot — Version
 Proprietary and Confidential.
 """
 
-__version__ = "1.1.0"
-__version_info__ = (1, 1, 0)
-__build_date__ = "2026-03-16"
-__status__ = "stable"  # stable, beta, dev
+__version__ = "1.2.0"
+__version_info__ = (1, 2, 0)
+__build_date__ = "2026-03-23"
+__status__ = "production"  # production, beta, dev
 __copyright__ = "© 2026 IndiaShop. All Rights Reserved."
 
 
@@ -31,7 +31,7 @@ def get_version_info() -> dict:
 def get_full_version() -> str:
     """Получить полную строку версии"""
     status_label = {
-        "stable": "",
+        "production": "",
         "beta": " (Beta)",
         "dev": " (Dev)"
     }.get(__status__, "")

@@ -1,0 +1,62 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Database (SQLite)
+*.db
+*.db-journal
+
+# PID files
+*.pid
+
+# Environment
+.env
+.env.local
+
+# Qwen AI
+.qwen/
+
+# Claude Flow
+.claude-flow/
+
+# Playwright
+.playwright-mcp/
+
+# Backups
+BACKUP*.zip
+BACKUP*.md
+
+# Documentation (optional)
+# *.md

@@ -8,30 +8,19 @@ from typing import Optional, List
 
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:
-    """Главное меню пользователя"""
+    """Главное меню пользователя (клиента)"""
     builder = ReplyKeyboardBuilder()
 
-    # ⚠️ Пользовательские кнопки скрыты до реализации (Приоритет 3)
-    # builder.row(
-    #     KeyboardButton(text="🛍 Каталог"),
-    #     KeyboardButton(text="🔍 Поиск"),
-    # )
-    # builder.row(
-    #     KeyboardButton(text="🛒 Корзина"),
-    #     KeyboardButton(text="❤️ Избранное"),
-    # )
-    # builder.row(
-    #     KeyboardButton(text="⚙️ Профиль"),
-    #     KeyboardButton(text="📞 Помощь"),
-    # )
-
-    # Временное меню для пользователей
+    # ✅ Клиентский функционал v1.2.0
     builder.row(
-        KeyboardButton(text="👋 Привет"),
-        KeyboardButton(text="📞 Помощь"),
+        KeyboardButton(text="🛍 Каталог товаров"),
+        KeyboardButton(text="📞 Связаться с менеджером"),
+    )
+    builder.row(
+        KeyboardButton(text="ℹ️ О боте"),
     )
 
-    builder.adjust(2)
+    builder.adjust(2, 1)
     return builder.as_markup(resize_keyboard=True)
 
 
