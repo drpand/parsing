@@ -1,0 +1,7 @@
+# Qwen AI Settings
+.qwen/settings.json.orig
+.qwen/memory/
+.qwen/skills/
+
+# Keep settings.json template
+!.qwen/settings.json.example

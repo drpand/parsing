@@ -1,0 +1,47 @@
+{
+  "model": {
+    "provider": "openrouter",
+    "default": "qwen/qwen3-8b"
+  },
+  "tools": {
+    "approvalMode": "auto-edit"
+  },
+  "language": "ru",
+  "rules": {
+    "context7": "required",
+    "playwright": "required"
+  },
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "your_github_token_here"
+      }
+    },
+    "superpowers": {
+      "command": "node",
+      "args": ["C:/Users/gruffi/.qwen/mcp-servers/superpowers-mcp/build/index.js"]
+    },
+    "real-browser": {
+      "command": "npx",
+      "args": ["-y", "real-browser-mcp"]
+    },
+    "skillsmith": {
+      "command": "npx",
+      "args": ["-y", "@skillsmith/mcp-server"]
+    },
+    "task-master": {
+      "command": "npx",
+      "args": ["-y", "task-master-ai"],
+      "env": {
+        "OPENROUTER_API_KEY": "your_openrouter_api_key_here"
+      }
+    },
+    "ruflo": {
+      "command": "npx",
+      "args": ["-y", "ruflo"]
+    }
+  },
+  "$version": 3
+}
