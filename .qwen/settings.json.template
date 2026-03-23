@@ -1,0 +1,143 @@
+# ============================================================================
+# QWEN MCP — Универсальные настройки для всех проектов
+# © 2026 IndiaShop. All Rights Reserved.
+# ============================================================================
+#
+# ИНСТРУКЦИЯ ПО УСТАНОВКЕ:
+# 1. Скопируйте этот файл как .qwen/settings.json в вашем проекте
+# 2. Замените ${YOUR_*} на реальные значения
+# 3. Сохраните файл
+#
+# ============================================================================
+
+{
+  "model": {
+    "provider": "openrouter",
+    "default": "qwen/qwen3-8b",
+    "fallback": "qwen/qwen2.5-72b"
+  },
+  "tools": {
+    "approvalMode": "auto-edit",
+    "maxRetries": 3,
+    "timeout": 300
+  },
+  "language": "ru",
+  "rules": {
+    "context7": "required",
+    "playwright": "required",
+    "filesystem": "allowed",
+    "terminal": "allowed"
+  },
+
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      },
+      "description": "GitHub API — issues, PR, commits, repos"
+    },
+
+    "ruflo": {
+      "command": "npx",
+      "args": ["-y", "ruflo"],
+      "description": "Ruflo MCP — агенты, swarm, память, workflow, metrics",
+      "features": [
+        "agent_spawn",
+        "swarm_init",
+        "memory_store",
+        "workflow_run",
+        "system_status"
+      ]
+    },
+
+    "task-master": {
+      "command": "npx",
+      "args": ["-y", "task-master-ai"],
+      "env": {
+        "OPENROUTER_API_KEY": "${OPENROUTER_API_KEY}"
+      },
+      "description": "Task Master AI — планирование задач, декомпозиция",
+      "features": [
+        "task_create",
+        "task_decompose",
+        "task_track"
+      ]
+    },
+
+    "skillsmith": {
+      "command": "npx",
+      "args": ["-y", "@skillsmith/mcp-server"],
+      "description": "Skillsmith MCP — AI skill discovery, pattern matching",
+      "features": [
+        "skill_discovery",
+        "pattern_search",
+        "knowledge_base"
+      ]
+    },
+
+    "real-browser": {
+      "command": "npx",
+      "args": ["-y", "real-browser-mcp"],
+      "description": "Real Browser MCP — веб-автоматизация, тестирование",
+      "features": [
+        "browser_navigate",
+        "browser_screenshot",
+        "browser_click",
+        "browser_fill"
+      ]
+    },
+
+    "superpowers": {
+      "command": "node",
+      "args": ["${HOME}/.qwen/mcp-servers/superpowers-mcp/build/index.js"],
+      "description": "Superpowers MCP — brainstorming, code review, planning",
+      "features": [
+        "brainstorm",
+        "code_review",
+        "planning",
+        "execution"
+      ]
+    },
+
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+      "env": {
+        "ALLOWED_DIRECTORIES": "${PROJECT_ROOT}"
+      },
+      "description": "Filesystem MCP — работа с файлами проекта"
+    },
+
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp"],
+      "description": "Playwright MCP — браузерная автоматизация",
+      "features": [
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_fill"
+      ]
+    }
+  },
+
+  "memory": {
+    "provider": "ruvector",
+    "namespace": "default",
+    "embeddingModel": "all-MiniLM-L6-v2",
+    "maxEntries": 1000,
+    "ttl": 86400
+  },
+
+  "logging": {
+    "level": "info",
+    "format": "json",
+    "output": ".qwen/logs/mcp.log"
+  },
+
+  "$version": 3,
+  "$lastUpdated": "2026-03-24",
+  "$compatibility": ["ruflo>=3.0.0", "task-master>=1.0.0", "skillsmith>=1.0.0"]
+}
