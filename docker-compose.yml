@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: indiashop_bot
+    restart: unless-stopped
+    
+    # Переменные окружения из .env
+    env_file:
+      - .env
+    
+    # Том для логов
+    volumes:
+      - ./logs:/app/logs
+      - ./bot.db:/app/bot.db
+    
+    # Shared memory для Chrome (важно!)
+    shm_size: 2gb
+    
+    # Ограничение ресурсов
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    
+    # Логи
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Сети
+networks:
+  default:
+    name: indiashop_network

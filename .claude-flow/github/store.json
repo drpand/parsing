@@ -1,0 +1,20 @@
+{
+  "repos": {
+    "gruffi/parsing": {
+      "owner": "gruffi",
+      "name": "parsing",
+      "branch": "main",
+      "lastAnalyzed": "2026-03-23T07:01:36.101Z",
+      "metrics": {
+        "commits": 346,
+        "branches": 10,
+        "contributors": 1,
+        "openIssues": 26,
+        "openPRs": 0
+      }
+    }
+  },
+  "prs": {},
+  "issues": {},
+  "version": "3.0.0"
+}

@@ -1,0 +1,852 @@
+"""
+Admin Products Handler v0.7.0 — Товары (список, карточка, публикация)
+© 2026 All Rights Reserved.
+
+Proprietary and Confidential.
+"""
+
+from aiogram import Router, F
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, BufferedInputFile
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.fsm.context import FSMContext
+from sqlalchemy import select, func
+from app.core.config import settings
+from app.db.database import database
+from app.db.models import Product
+from app.utils.logger import logger
+from app.utils.helpers import safe_html, truncate_text
+from app.bots.handlers.admin_settings import get_setting_value
+from app.bots.handlers.admin_menu import AdminStates
+from aiogram.fsm.state import State, StatesGroup
+
+# 🔐 ДОПОЛНИТЕЛЬНЫЕ СОСТОЯНИЯ ДЛЯ РЕДАКТИРОВАНИЯ
+class ProductEditStates(StatesGroup):
+    waiting_for_title = State()
+    waiting_for_price = State()
+    waiting_for_description = State()
+    waiting_for_in_stock = State()
+    waiting_for_delete_confirm = State()
+    waiting_for_edit_action = State()
+import json
+import requests
+
+router = Router()
+
+ITEMS_PER_PAGE = 10  # 🔐 10 ТОВАРОВ НА СТРАНИЦЕ
+
+
+# ===== ОБРАБОТКА КНОПКИ "📦 Товары" (ТЕКСТ) =====
+
+@router.message(F.text == "📦 Товары")
+async def admin_products_text(message: Message, state: FSMContext):
+    """
+    📦 Обработка кнопки "Товары" из главного меню
+    ✅ ПРОВЕРКА: Пустая база, ошибки БД, логирование
+    ✅ ДОСТУП: Админы и Менеджеры
+    """
+    await state.clear()  # 🔐 ПРИНУДИТЕЛЬНЫЙ СБРОС ЛЮБОГО СОСТОЯНИЯ
+
+    # 🔐 ПРОВЕРКА ПРАВ: Админы или Менеджеры
+    user_id = message.from_user.id
+    is_admin = user_id in settings.admin_ids
+    is_manager = False
+    if not is_admin:
+        from app.db.repositories import ManagerRepository
+        async with database.get_session() as session:
+            repo = ManagerRepository(session)
+            managers = await repo.get_all_active()
+            is_manager = any(m.telegram_id == str(user_id) for m in managers)
+
+    if not is_admin and not is_manager:
+        return
+
+    logger.info(f"{'Manager' if is_manager else 'Admin'} {user_id} clicked 'Товары' button")
+
+    try:
+        async with database.get_session() as session:
+            # 🔐 ПРОВЕРКА: Есть ли товары вообще
+            total = (await session.execute(select(func.count(Product.id)))).scalar() or 0
+
+            if total == 0:
+                await message.answer(
+                    "📭 <b>База товаров пуста!</b>\n\n"
+                    "Сначала запустите парсинг:\n"
+                    "1. Нажмите 🔍 Парсинг категории\n"
+                    "2. Выберите товар или категорию\n"
+                    "3. После парсинга товары появятся здесь",
+                    parse_mode="HTML",
+                )
+                logger.info(f"Admin {message.from_user.id} tried to view products, but DB is empty")
+                return
+
+            # 🔐 ВСЁ ОК — показываем товары
+            await show_products_page(message, state, page=1)
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка при просмотре товаров: {type(e).__name__}: {e}", exc_info=True)
+        await message.answer(
+            "❌ <b>Ошибка при загрузке товаров!</b>\n\n"
+            f"<i>{safe_html(str(e)[:200])}</i>\n\n"
+            "Попробуйте позже или проверьте логи.",
+            parse_mode="HTML",
+        )
+
+
+async def show_products_page(callback: CallbackQuery | Message, state: FSMContext, page: int = 1):
+    """
+    🔐 Показывает страницу товаров (10 штук)
+    ✅ БЕЗ ТЕКСТА — ТОЛЬКО КНОПКИ!
+    ✅ ДОСТУП: Админы и Менеджеры
+    """
+    await state.clear()
+
+    user_id = callback.from_user.id if hasattr(callback, 'from_user') else callback.from_user.id
+
+    # 🔐 ПРОВЕРКА ПРАВ: Админы или Менеджеры
+    is_admin = user_id in settings.admin_ids
+    is_manager = False
+    if not is_admin:
+        from app.db.repositories import ManagerRepository
+        async with database.get_session() as session:
+            repo = ManagerRepository(session)
+            managers = await repo.get_all_active()
+            is_manager = any(m.telegram_id == str(user_id) for m in managers)
+
+    if not is_admin and not is_manager:
+        return
+
+    logger.info(f"{'Manager' if is_manager else 'Admin'} {user_id} viewing products page {page}")
+
+    try:
+        async with database.get_session() as session:
+            # Считаем товары
+            total = (await session.execute(select(func.count(Product.id)))).scalar() or 0
+            active = (await session.execute(
+                select(func.count(Product.id)).where(Product.is_active == True)
+            )).scalar() or 0
+
+            total_pages = max(1, (total + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+            page = max(1, min(page, total_pages))  # Ограничиваем страницу
+
+            # Получаем товары для текущей страницы
+            offset = (page - 1) * ITEMS_PER_PAGE
+            result = await session.execute(
+                select(Product)
+                .order_by(Product.created_at.desc())
+                .offset(offset)
+                .limit(ITEMS_PER_PAGE)
+            )
+            products = result.scalars().all()
+
+            # 🔐 ТЕКСТ — ЗАГОЛОВОК С КОЛИЧЕСТВОМ!
+            text = f"📦 Товары: {total}"  # Заголовок с количеством
+
+            if total == 0:
+                # 🔐 БАЗА ПУСТА — показываем сообщение
+                text = "📭 База товаров пуста!"
+
+                keyboard = InlineKeyboardBuilder()
+                keyboard.button(text="🔙 В админ-панель", callback_data="admin_back")
+
+                if isinstance(callback, CallbackQuery):
+                    try:
+                        await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+                    except Exception:
+                        await callback.message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+                else:
+                    await callback.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+
+                logger.info(f"Admin {user_id} viewed products, but DB is empty")
+                return
+
+            if not products:
+                text += "❌ Товаров нет\n"
+
+            # Создаём inline клавиатуру
+            keyboard = InlineKeyboardBuilder()
+
+            # 🔐 КНОПКИ ТОВАРОВ (строго по одной в ряд)
+            for i, product in enumerate(products, 1):
+                # Полное название + цена (ровно)
+                title = product.title[:45]  # Ограничиваем длину
+                price = f"{product.price_rub:,.0f}₽"
+                button_text = f"{title} | {price}"
+                keyboard.row(  # 🔐 КАЖДАЯ КНОПКА В ОТДЕЛЬНОМ РЯДУ!
+                    InlineKeyboardButton(
+                        text=button_text,
+                        callback_data=f"product_view:{product.id}"
+                    )
+                )
+
+            # 🔐 ПАГИНАЦИЯ (отдельный ряд)
+            nav_buttons = []
+            if page > 1:
+                nav_buttons.append(InlineKeyboardButton(text="◀️", callback_data=f"products_page:{page-1}"))
+
+            nav_buttons.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="empty"))
+
+            if page < total_pages:
+                nav_buttons.append(InlineKeyboardButton(text="▶️", callback_data=f"products_page:{page+1}"))
+
+            if nav_buttons:
+                keyboard.row(*nav_buttons)
+
+            # 🔐 КНОПКА "В АДМИНКУ" (отдельно)
+            keyboard.row(InlineKeyboardButton(text="🔙 В админ-панель", callback_data="admin_back"))
+
+            # 🔐 ОТПРАВЛЯЕМ — ТОЛЬКО КНОПКИ!
+            if isinstance(callback, CallbackQuery):
+                try:
+                    await callback.message.edit_text(text, reply_markup=keyboard.as_markup())
+                except Exception as e:
+                    logger.error(f"Error editing message: {e}")
+                    # Если нельзя редактировать — удаляем старое и отправляем новое
+                    try:
+                        await callback.message.delete()
+                    except Exception:
+                        pass
+                    await callback.message.answer(text, reply_markup=keyboard.as_markup())
+            else:
+                await callback.answer(text, reply_markup=keyboard.as_markup())
+
+    except Exception as e:
+        logger.error(f"Products list error: {e}")
+        error_text = f"❌ Ошибка\n\n{str(e)[:200]}"
+        if isinstance(callback, CallbackQuery):
+            await callback.message.answer(error_text, parse_mode="HTML")
+        else:
+            await callback.answer(error_text, parse_mode="HTML")
+
+
+# ===== ПРОСМОТР ТОВАРА =====
+
+@router.callback_query(F.data.startswith("product_view:"))
+async def product_view(callback: CallbackQuery, state: FSMContext):
+    """
+    👁️ Просмотр товара с расчётом цены через USD
+    ✅ Цена в рублях через курс USD→INR и USD→RUB
+    ✅ СТРЕЛКИ ← → для навигации между товарами
+    ✅ ДОСТУП: Админы и Менеджеры
+    """
+    # 🔐 ПРОВЕРКА ПРАВ: Админы или Менеджеры
+    user_id = callback.from_user.id
+    is_admin = user_id in settings.admin_ids
+    is_manager = False
+    if not is_admin:
+                from app.db.repositories import ManagerRepository
+        async with database.get_session() as session:
+            repo = ManagerRepository(session)
+            managers = await repo.get_all_active()
+            is_manager = any(m.telegram_id == str(user_id) for m in managers)
+
+    if not is_admin and not is_manager:
+        return
+
+    try:
+        product_id = int(callback.data.split(":")[1])
+        logger.info(f"🔐 {'Manager' if is_manager else 'Admin'} {user_id} viewing product: {product_id}")
+
+        async with database.get_session() as session:
+            # 🔐 ИЩЕМ ТОВАР ПО ID (а не по индексу!)
+            result = await session.execute(
+                select(Product).where(Product.id == product_id)
+            )
+            product = result.scalar()
+
+            if not product:
+                await callback.answer("❌ Товар не найден", show_alert=True)
+                return
+
+            # 🔐 ПОЛУЧАЕМ КУРСЫ ИЗ БД
+            usd_inr = await get_setting_value("usd_inr", 91.0)
+            usd_rub = await get_setting_value("usd_rub", 80.0)
+
+            # 🔐 РАСЧЁТ ЦЕНЫ: INR → USD → RUB
+            price_usd = product.price_inr / usd_inr  # Конвертируем в USD
+            price_rub = int(price_usd * usd_rub)  # Конвертируем в RUB
+
+            # 🔐 НАВИГАЦИЯ: получаем ID предыдущего и следующего товара
+            # Получаем все ID товаров в порядке создания (новые первыми)
+            all_ids_result = await session.execute(
+                select(Product.id).order_by(Product.created_at.desc())
+            )
+            all_ids = [row[0] for row in all_ids_result.all()]
+
+            try:
+                current_index = all_ids.index(product_id)
+            except ValueError:
+                current_index = -1
+
+            # 🔐 ИСПРАВЛЕНО: prev_id = предыдущий (старее), next_id = следующий (новее)
+            # all_ids отсортированы по убыванию (новые первыми)
+            prev_id = all_ids[current_index + 1] if current_index >= 0 and current_index + 1 < len(all_ids) else None  # Старее
+            next_id = all_ids[current_index - 1] if current_index > 0 else None  # Новее
+
+            # Сохраняем текущую страницу в state
+            data = await state.get_data()
+            current_page = data.get("products_page", 1)
+
+            # Формируем карточку товара
+            text = f"🛍 <b>{product.title[:100]}</b>\n\n"
+
+            # Цены
+            if product.original_price_inr and product.discount_percent > 0:
+                text += f"🔥 <b>СКИДКА {int(product.discount_percent)}%</b>\n"
+                text += f"<s>₹{product.original_price_inr:,.0f}</s> → <b>₹{product.price_inr:,.0f}</b>\n"
+                text += f"<b>💰 Цена: {price_rub:,} ₽</b>\n\n"
+            else:
+                text += f"<b>💰 Цена: {price_rub:,} ₽</b>\n\n"
+
+            # Наличие
+            text += f"{'✅' if product.in_stock else '❌'} В наличии\n\n"
+
+            # 🔐 СТАТУС ПУБЛИКАЦИИ С ДАТОЙ
+            if product.is_active:
+                if product.last_posted_at:
+                    # 🔐 Конвертируем UTC в IST (India = UTC+5:30)
+                    from datetime import timedelta
+                    local_time = product.last_posted_at + timedelta(hours=5, minutes=30)
+                    date_str = local_time.strftime("%d.%m.%Y %H:%M")
+                    text += f"📊 <b>Опубликован:</b> {date_str} (IST)\n\n"
+                else:
+                    text += f"📊 <b>Опубликован:</b> Дата не указана\n\n"
+            else:
+                text += f"📊 <b>Не опубликован</b>\n\n"
+
+            # Картинки
+            if product.images:
+                images = json.loads(product.images) if isinstance(product.images, str) else product.images
+                if images:
+                    text += f"🖼 <a href='{images[0]}'>Фото товара</a>\n\n"
+
+            # Ссылка
+            if product.source_url:
+                text += f"🔗 <a href='{product.source_url}'>Оригинал</a>\n\n"
+
+            text += f"<b>🆔 ID:</b> <code>{product.id}</code>"
+            text += f"\n\n<b>📊 Позиция:</b> {current_index + 1} из {len(all_ids)}"
+
+            # 🔐 КНОПКИ ДЕЙСТВИЙ + СТРЕЛКИ
+            keyboard = InlineKeyboardBuilder()
+
+            # 🔐 СТРЕЛКИ НАВИГАЦИИ (первый ряд)
+            nav_buttons = []
+            if prev_id:
+                nav_buttons.append(InlineKeyboardButton(text="◀️", callback_data=f"product_view:{prev_id}"))
+            else:
+                nav_buttons.append(InlineKeyboardButton(text="⚪", callback_data="empty"))
+
+            nav_buttons.append(InlineKeyboardButton(text="🔙 К списку", callback_data="products_view"))
+
+            if next_id:
+                nav_buttons.append(InlineKeyboardButton(text="▶️", callback_data=f"product_view:{next_id}"))
+            else:
+                nav_buttons.append(InlineKeyboardButton(text="⚪", callback_data="empty"))
+
+            keyboard.row(*nav_buttons)
+
+            # Кнопки действий
+            keyboard.row(
+                InlineKeyboardButton(text="📤 Опубликовать", callback_data=f"product_publish:{product.id}")
+            )
+
+            keyboard.row(
+                InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"product_edit:{product.id}")
+            )
+
+            # Пробуем отправить с фото
+            try:
+                if product.images:
+                    images = json.loads(product.images) if isinstance(product.images, str) else product.images
+                    if images and images[0].startswith('http'):
+                        response = requests.get(images[0], timeout=10)
+                        if response.status_code == 200:
+                            photo = BufferedInputFile(response.content, filename=f"product_{product.id}.jpg")
+                            await callback.message.answer_photo(
+                                photo=photo,
+                                caption=text,
+                                reply_markup=keyboard.as_markup(),
+                                parse_mode="HTML",
+                            )
+                            return
+            except Exception as e:
+                logger.warning(f"Failed to send photo: {e}")
+
+            # Если фото не удалось — отправляем текст
+            await callback.message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Product view error: {e}")
+        await callback.answer(f"❌ Ошибка: {str(e)[:100]}", show_alert=True)
+
+
+# ===== ХЭНДЛЕР "🔙 К СПИСКУ ТОВАРОВ" =====
+
+@router.callback_query(F.data == "products_view")
+async def products_view_callback(callback: CallbackQuery, state: FSMContext):
+    """
+    🔙 Возврат к списку товаров (страница 1)
+    """
+    await callback.answer()
+    # Очищаем страницу при возврате
+    await state.update_data(products_page=1)
+    await show_products_page(callback, state, page=1)
+
+
+# ===== ПАГИНАЦИЯ =====
+
+@router.callback_query(F.data.startswith("products_page:"))
+async def products_page(callback: CallbackQuery, state: FSMContext):
+    """
+    📄 Переключение страницы товаров
+    ✅ ИЗМЕНЕНО: edit_text + 5 товаров на странице
+    """
+    if callback.from_user.id not in settings.admin_ids:
+        return
+
+    page = int(callback.data.split(":")[1])
+    await callback.answer()
+    # Сохраняем страницу в state
+    await state.update_data(products_page=page)
+    await show_products_page(callback, state, page=page)
+
+
+# ===== НАВИГАЦИЯ =====
+
+@router.callback_query(F.data == "products_back")
+async def products_back(callback: CallbackQuery, state: FSMContext):
+    """🔙 Возврат к списку товаров (страница 1)"""
+    await callback.answer()
+    await show_products_page(callback, state, page=1)
+
+
+@router.callback_query(F.data == "ignore")
+async def ignore_callback(callback: CallbackQuery):
+    """Глобальный перехват нажатий на неактивные кнопки (пагинация)"""
+    await callback.answer()
+
+
+# ===== ЗАГЛУШКИ (СКРЫТЫ) =====
+
+@router.callback_query(F.data == "products_add_all")
+async def products_add_all(callback: CallbackQuery):
+    """Добавить все — заглушка"""
+    await callback.answer("⚠️ Функция в разработке...", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("product_publish:"))
+async def product_publish_now(callback: CallbackQuery):
+    """
+    📤 Опубликовать товар прямо сейчас
+    ✅ Публикация в группу по умолчанию
+    ✅ Доступно админам и менеджерам
+    """
+    # 🔐 ПРОВЕРКА ПРАВ: Админы или Менеджеры
+    is_admin = callback.from_user.id in settings.admin_ids
+
+    # Проверяем менеджеров
+    is_manager = False
+    if not is_admin:
+                from app.db.repositories import ManagerRepository
+        async with database.get_session() as session:
+            repo = ManagerRepository(session)
+            managers = await repo.get_all_active()
+            is_manager = any(m.telegram_id == str(callback.from_user.id) for m in managers)
+
+    if not is_admin and not is_manager:
+        return
+
+    product_id = int(callback.data.split(":")[1])
+
+    try:
+        async with database.get_session() as session:
+            # 1. Получить товар из БД
+            result = await session.execute(select(Product).where(Product.id == product_id))
+            product = result.scalar()
+
+            if not product:
+                await callback.answer("❌ Товар не найден!", show_alert=True)
+                return
+
+            # 2. Получить глобальный poster_service
+            from app.services.poster_service import poster_service
+
+            if not poster_service:
+                await callback.answer("❌ Сервис публикации не инициализирован!", show_alert=True)
+                logger.error("Poster service is None")
+                return
+
+            # 3. Получить активные группы
+            from app.db.models import PostGroup
+            groups_result = await session.execute(
+                select(PostGroup).where(PostGroup.is_active == True)
+            )
+            groups = groups_result.scalars().all()
+
+            if not groups:
+                await callback.answer("❌ Нет активных групп для публикации!", show_alert=True)
+                logger.warning(f"No active groups for publishing product {product_id}")
+                return
+
+            # 4. Опубликовать в первую активную группу
+            group = groups[0]
+            success = await poster_service._send_post(group, product)
+
+            if success:
+                # 5. Записать дату публикации
+                from datetime import datetime
+                product.last_posted_at = datetime.utcnow()
+                product.is_active = True
+                await session.commit()
+
+                await callback.answer(f"✅ Товар опубликован в {group.chat_name}!", show_alert=True)
+                logger.info(f"Admin {callback.from_user.id} published product {product_id} to {group.chat_name}")
+            else:
+                await callback.answer("❌ Не удалось опубликовать товар", show_alert=True)
+                logger.error(f"Failed to publish product {product_id}")
+
+    except Exception as e:
+        logger.error(f"Publish error: {e}", exc_info=True)
+        await callback.answer(f"❌ Ошибка: {str(e)[:100]}", show_alert=True)
+
+
+# ===== РЕДАКТИРОВАНИЕ ТОВАРА =====
+
+@router.callback_query(F.data.startswith("product_edit:"))
+async def product_edit_start(callback: CallbackQuery, state: FSMContext):
+    """✏️ Начало редактирования товара"""
+    # 🔐 ПРОВЕРКА ПРАВ: Админы или Менеджеры
+    is_admin = callback.from_user.id in settings.admin_ids
+
+    # Проверяем менеджеров
+    is_manager = False
+    if not is_admin:
+                from app.db.repositories import ManagerRepository
+        async with database.get_session() as session:
+            repo = ManagerRepository(session)
+            managers = await repo.get_all_active()
+            is_manager = any(m.telegram_id == str(callback.from_user.id) for m in managers)
+
+    if not is_admin and not is_manager:
+        return
+
+    # 🔐 ИЗВЛЕКАЕМ PRODUCT_ID: всегда последний элемент после :
+    product_id = int(callback.data.split(":")[-1])
+    logger.info(f"✏️ {'Manager' if is_manager else 'Admin'} {callback.from_user.id} editing product {product_id}")
+
+    # Сохраняем ID товара в state
+    await state.update_data(edit_product_id=product_id)
+    await state.set_state(ProductEditStates.waiting_for_edit_action)
+
+    # Получаем товар
+    async with database.get_session() as session:
+        result = await session.execute(select(Product).where(Product.id == product_id))
+        product = result.scalar()
+
+    if not product:
+        await callback.answer("❌ Товар не найден", show_alert=True)
+        return
+
+    # Меню редактирования
+    keyboard = InlineKeyboardBuilder()
+    keyboard.row(InlineKeyboardButton(text="📝 Название", callback_data=f"edit_field:title:{product_id}"))
+    keyboard.row(InlineKeyboardButton(text="💰 Цена (INR)", callback_data=f"edit_field:price:{product_id}"))
+    keyboard.row(InlineKeyboardButton(text="📝 Описание", callback_data=f"edit_field:description:{product_id}"))
+    keyboard.row(
+        InlineKeyboardButton(text="✅ В наличии", callback_data=f"edit_field:in_stock:1:{product_id}") if product.in_stock else InlineKeyboardButton(text="❌ Нет в наличии", callback_data=f"edit_field:in_stock:0:{product_id}")
+    )
+    keyboard.row(InlineKeyboardButton(text="🗑 Удалить", callback_data=f"product_delete:{product_id}"))
+    keyboard.row(InlineKeyboardButton(text="🔙 Назад", callback_data=f"product_view:{product_id}"))
+
+    text = (
+        f"✏️ <b>Редактирование товара #{product_id}</b>\n\n"
+        f"📝 <b>Текущие данные:</b>\n"
+        f"Название: <code>{product.title[:50]}...</code>\n"
+        f"Цена: ₹{product.price_inr:,.0f}\n"
+        f"Наличие: {'✅' if product.in_stock else '❌'}\n\n"
+        f"Выберите что изменить:"
+    )
+
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=keyboard.as_markup(),
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        # Если edit_text не удался (сообщение без текста), отправляем новое
+        await callback.message.answer(
+            text,
+            reply_markup=keyboard.as_markup(),
+            parse_mode="HTML",
+        )
+
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("edit_field:"))
+async def product_edit_field(callback: CallbackQuery, state: FSMContext):
+    """✏️ Редактирование конкретного поля"""
+    # 🔐 ПРОВЕРКА ПРАВ: Админы или Менеджеры
+    is_admin = callback.from_user.id in settings.admin_ids
+
+    # Проверяем менеджеров
+    is_manager = False
+    if not is_admin:
+                from app.db.repositories import ManagerRepository
+        async with database.get_session() as session:
+            repo = ManagerRepository(session)
+            managers = await repo.get_all_active()
+            is_manager = any(m.telegram_id == str(callback.from_user.id) for m in managers)
+
+    if not is_admin and not is_manager:
+        return
+
+    parts = callback.data.split(":")
+    field = parts[1]
+    # 🔐 ИЗВЛЕКАЕМ PRODUCT_ID: всегда последний элемент
+    product_id = int(parts[-1])
+
+    await state.update_data(edit_product_id=product_id)
+
+    if field == "title":
+        await state.set_state(ProductEditStates.waiting_for_title)
+        await callback.message.edit_text(
+            "📝 <b>Изменение названия</b>\n\n"
+            "Отправьте новое название товара:",
+            reply_markup=InlineKeyboardBuilder().button(text="❌ Отмена", callback_data=f"product_edit:{product_id}").as_markup(),
+            parse_mode="HTML",
+        )
+    elif field == "price":
+        await state.set_state(ProductEditStates.waiting_for_price)
+        await callback.message.edit_text(
+            "💰 <b>Изменение цены</b>\n\n"
+            "Отправьте новую цену в INR (число):\n"
+            "Пример: <code>2950</code>",
+            reply_markup=InlineKeyboardBuilder().button(text="❌ Отмена", callback_data=f"product_edit:{product_id}").as_markup(),
+            parse_mode="HTML",
+        )
+    elif field == "description":
+        await state.set_state(ProductEditStates.waiting_for_description)
+        await callback.message.edit_text(
+            "📝 <b>Изменение описания</b>\n\n"
+            "Отправьте новое описание:",
+            reply_markup=InlineKeyboardBuilder().button(text="❌ Отмена", callback_data=f"product_edit:{product_id}").as_markup(),
+            parse_mode="HTML",
+        )
+    elif field == "in_stock":
+        # Переключить наличие
+        # callback_data: edit_field:in_stock:1:{product_id}
+        current_value = int(parts[2]) == 1  # 1 = в наличии, 0 = нет
+        # product_id уже извлечён выше как parts[-1]
+
+        async with database.get_session() as session:
+            result = await session.execute(select(Product).where(Product.id == product_id))
+            product = result.scalar()
+            if product:
+                product.in_stock = not current_value
+                await session.commit()
+                logger.info(f"✅ Product {product_id} in_stock set to {product.in_stock}")
+
+        await callback.answer(f"✅ {'В наличии' if product.in_stock else 'Нет в наличии'}", show_alert=True)
+
+        # 🔐 ОБНОВЛЯЕМ МЕНЮ (с обработкой ошибки)
+        try:
+            await product_edit_start(callback, state)
+        except Exception as e:
+            logger.warning(f"Failed to update edit menu: {e}")
+            # Fallback: просто отвечаем что обновлено
+            await callback.message.answer(
+                f"✅ {'В наличии' if product.in_stock else 'Нет в наличии'}\n\n"
+                f"Нажмите 'Назад' и снова 'Редактировать' чтобы продолжить.",
+                reply_markup=InlineKeyboardBuilder().button(text="🔙 Назад", callback_data=f"product_view:{product_id}").as_markup()
+            )
+
+        return
+
+    await callback.answer()
+
+
+@router.message(ProductEditStates.waiting_for_title)
+async def product_edit_title_save(message: Message, state: FSMContext):
+    """💾 Сохранение нового названия"""
+    # 🔐 ПРОВЕРКА ПРАВ: Админы или Менеджеры
+    is_admin = message.from_user.id in settings.admin_ids
+    is_manager = False
+    if not is_admin:
+                from app.db.repositories import ManagerRepository
+        async with database.get_session() as session:
+            repo = ManagerRepository(session)
+            managers = await repo.get_all_active()
+            is_manager = any(m.telegram_id == str(message.from_user.id) for m in managers)
+
+    if not is_admin and not is_manager:
+        await message.answer("❌ Доступ запрещён")
+        return
+
+    data = await state.get_data()
+    product_id = data.get("edit_product_id")
+
+    if not product_id:
+        await message.answer("❌ Ошибка: товар не найден")
+        await state.clear()
+        return
+
+    new_title = message.text.strip()[:200]
+
+    async with database.get_session() as session:
+        result = await session.execute(select(Product).where(Product.id == product_id))
+        product = result.scalar()
+        if product:
+            product.title = new_title
+            await session.commit()
+            logger.info(f"✅ Product {product_id} title updated by {'manager' if is_manager else 'admin'}: {new_title[:50]}")
+
+    await message.answer(f"✅ <b>Название обновлено!</b>\n\n<code>{new_title[:100]}</code>", parse_mode="HTML")
+    await state.clear()
+
+    # 🔐 ВОЗВРАТ: Показываем товар снова
+    from app.bots.handlers.manager import send_product_card
+    await send_product_card(message, product_id)
+
+
+@router.message(ProductEditStates.waiting_for_price)
+async def product_edit_price_save(message: Message, state: FSMContext):
+    """💾 Сохранение новой цены"""
+    # 🔐 ПРОВЕРКА ПРАВ: Админы или Менеджеры
+    is_admin = message.from_user.id in settings.admin_ids
+    is_manager = False
+    if not is_admin:
+                from app.db.repositories import ManagerRepository
+        async with database.get_session() as session:
+            repo = ManagerRepository(session)
+            managers = await repo.get_all_active()
+            is_manager = any(m.telegram_id == str(message.from_user.id) for m in managers)
+
+    if not is_admin and not is_manager:
+        await message.answer("❌ Доступ запрещён")
+        return
+
+    data = await state.get_data()
+    product_id = data.get("edit_product_id")
+
+    if not product_id:
+        await message.answer("❌ Ошибка: товар не найден")
+        await state.clear()
+        return
+
+    try:
+        new_price = float(message.text.strip())
+        if new_price <= 0:
+            raise ValueError("Цена должна быть больше 0")
+    except (ValueError, TypeError):
+        await message.answer("❌ Неверный формат цены. Отправьте число.")
+        return
+
+    async with database.get_session() as session:
+        result = await session.execute(select(Product).where(Product.id == product_id))
+        product = result.scalar()
+        if product:
+            product.price_inr = new_price
+            await session.commit()
+            logger.info(f"✅ Product {product_id} price updated by {'manager' if is_manager else 'admin'} to: {new_price}")
+
+    await message.answer(f"✅ <b>Цена обновлена!</b>\n\n💰 ₹{new_price:,.0f}", parse_mode="HTML")
+    await state.clear()
+
+    # 🔐 ВОЗВРАТ: Показываем товар снова
+    from app.bots.handlers.manager import send_product_card
+    await send_product_card(message, product_id)
+
+
+@router.message(ProductEditStates.waiting_for_description)
+async def product_edit_description_save(message: Message, state: FSMContext):
+    """💾 Сохранение нового описания"""
+    # 🔐 ПРОВЕРКА ПРАВ: Админы или Менеджеры
+    is_admin = message.from_user.id in settings.admin_ids
+    is_manager = False
+    if not is_admin:
+                from app.db.repositories import ManagerRepository
+        async with database.get_session() as session:
+            repo = ManagerRepository(session)
+            managers = await repo.get_all_active()
+            is_manager = any(m.telegram_id == str(message.from_user.id) for m in managers)
+
+    if not is_admin and not is_manager:
+        await message.answer("❌ Доступ запрещён")
+        return
+
+    data = await state.get_data()
+    product_id = data.get("edit_product_id")
+
+    if not product_id:
+        await message.answer("❌ Ошибка: товар не найден")
+        await state.clear()
+        return
+
+    new_description = message.text.strip()[:1000]
+
+    async with database.get_session() as session:
+        result = await session.execute(select(Product).where(Product.id == product_id))
+        product = result.scalar()
+        if product:
+            product.description = new_description
+            await session.commit()
+            logger.info(f"✅ Product {product_id} description updated by {'manager' if is_manager else 'admin'}")
+
+    await message.answer(f"✅ <b>Описание обновлено!</b>\n\n<code>{new_description[:200]}...</code>", parse_mode="HTML")
+    await state.clear()
+
+    # 🔐 ВОЗВРАТ: Показываем товар снова
+    from app.bots.handlers.manager import send_product_card
+    await send_product_card(message, product_id)
+
+
+# ===== УДАЛЕНИЕ ТОВАРА =====
+
+@router.callback_query(F.data.startswith("product_delete:"))
+async def product_delete_confirm(callback: CallbackQuery, state: FSMContext):
+    """🗑 Подтверждение удаления товара"""
+    if callback.from_user.id not in settings.admin_ids:
+        return
+
+    product_id = int(callback.data.split(":")[1])
+    await state.update_data(delete_product_id=product_id)
+    await state.set_state(ProductEditStates.waiting_for_delete_confirm)
+
+    keyboard = InlineKeyboardBuilder()
+    keyboard.row(
+        InlineKeyboardButton(text="❌ Да, удалить", callback_data=f"delete_confirm:{product_id}"),
+        InlineKeyboardButton(text="❌ Отмена", callback_data=f"product_edit:{product_id}")
+    )
+
+    await callback.message.edit_text(
+        "🗑 <b>Удаление товара</b>\n\n"
+        "Вы уверены что хотите удалить этот товар?\n"
+        "Это действие нельзя отменить!",
+        reply_markup=keyboard.as_markup(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("delete_confirm:"))
+async def product_delete_execute(callback: CallbackQuery, state: FSMContext):
+    """🗑 Выполнение удаления"""
+    if callback.from_user.id not in settings.admin_ids:
+        return
+
+    product_id = int(callback.data.split(":")[1])
+
+    async with database.get_session() as session:
+        result = await session.execute(select(Product).where(Product.id == product_id))
+        product = result.scalar()
+        if product:
+            await session.delete(product)
+            await session.commit()
+            logger.info(f"🗑 Product {product_id} deleted by admin {callback.from_user.id}")
+
+    await callback.answer(f"✅ Товар #{product_id} удалён!", show_alert=True)
+    await state.clear()
+    # Вернуться к списку товаров
+    await show_products_page(callback, state, page=1)
