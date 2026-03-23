@@ -36,10 +36,24 @@ async def cmd_start(message: Message):
     from app.bots.keyboards.main import get_manager_keyboard
 
     is_manager = False
+    manager_username = message.from_user.username
+
     async with database.get_session() as session:
         repo = ManagerRepository(session)
         managers = await repo.get_all_active()
+
+        # 🔐 ПРОВЕРКА 1: По telegram_id (если уже обновлён)
         is_manager = any(m.telegram_id == str(message.from_user.id) for m in managers)
+
+        # 🔐 ПРОВЕРКА 2: По username (если telegram_id = temp_{username})
+        if not is_manager and manager_username:
+            for m in managers:
+                if m.telegram_id.startswith("temp_") and m.telegram_id.replace("temp_", "") == manager_username:
+                    # 🔐 НАЙДЕН МЕНЕДЖЕР ПО USERNAME — ОБНОВЛЯЕМ telegram_id
+                    await repo.update(m.id, {"telegram_id": str(message.from_user.id)})
+                    logger.info(f"✅ Manager @{manager_username} telegram_id updated: {m.telegram_id} → {message.from_user.id}")
+                    is_manager = True
+                    break
 
     # Показываем меню в зависимости от роли
     if is_manager:
